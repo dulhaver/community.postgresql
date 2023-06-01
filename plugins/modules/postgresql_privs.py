@@ -120,21 +120,6 @@ options:
     - Mutually exclusive with I(login_password).
     type: str
     default: ''
-  ssl_mode:
-    description:
-    - Determines whether or with what priority a secure SSL TCP/IP connection will be negotiated with the server.
-    - See U(https://www.postgresql.org/docs/current/static/libpq-ssl.html) for more information on the modes.
-    - Default of C(prefer) matches libpq default.
-    type: str
-    default: prefer
-    choices: [ allow, disable, prefer, require, verify-ca, verify-full ]
-  ca_cert:
-    description:
-    - Specifies the name of a file containing SSL certificate authority (CA) certificate(s).
-    - If the file exists, the server's certificate will be verified to be signed by one of these authorities.
-    type: str
-    aliases:
-    - ssl_rootcert
   trust_input:
     description:
     - If C(false), check whether values of parameters I(roles), I(target_roles), I(session_role),
@@ -157,7 +142,6 @@ options:
     version_added: '1.2.0'
 
 notes:
-- Supports C(check_mode).
 - Parameters that accept comma separated lists (I(privs), I(objs), I(roles))
   have singular alias names (I(priv), I(obj), I(role)).
 - To revoke only C(GRANT OPTION) for a specific object, set I(state) to
@@ -184,9 +168,12 @@ seealso:
   description: Complete reference of the PostgreSQL REVOKE command documentation.
   link: https://www.postgresql.org/docs/current/sql-revoke.html
 
+attributes:
+  check_mode:
+    support: full
+
 extends_documentation_fragment:
 - community.postgresql.postgres
-
 
 author:
 - Bernhard Weitzhofer (@b6d)
@@ -441,7 +428,7 @@ from ansible_collections.community.postgresql.plugins.module_utils.database impo
     pg_quote_identifier,
     check_input,
 )
-from ansible_collections.community.postgresql.plugins.module_utils.postgres import postgres_common_argument_spec
+from ansible_collections.community.postgresql.plugins.module_utils.postgres import postgres_common_argument_spec, get_conn_params
 from ansible.module_utils._text import to_native
 
 VALID_PRIVS = frozenset(('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE',
@@ -494,32 +481,14 @@ class Connection(object):
     def __init__(self, params, module):
         self.database = params.database
         self.module = module
-        # To use defaults values, keyword arguments must be absent, so
-        # check which values are empty and don't include in the **kw
-        # dictionary
-        params_map = {
-            "login_host": "host",
-            "login_user": "user",
-            "login_password": "password",
-            "port": "port",
-            "database": "database",
-            "ssl_mode": "sslmode",
-            "ca_cert": "sslrootcert"
-        }
 
-        kw = dict((params_map[k], getattr(params, k)) for k in params_map
-                  if getattr(params, k) != '' and getattr(params, k) is not None)
-
-        # If a login_unix_socket is specified, incorporate it here.
-        is_localhost = "host" not in kw or kw["host"] == "" or kw["host"] == "localhost"
-        if is_localhost and params.login_unix_socket != "":
-            kw["host"] = params.login_unix_socket
+        conn_params = get_conn_params(module, params.__dict__, warn_db_default=False)
 
         sslrootcert = params.ca_cert
         if psycopg2.__version__ < '2.4.3' and sslrootcert is not None:
             raise ValueError('psycopg2 must be at least 2.4.3 in order to user the ca_cert parameter')
 
-        self.connection = psycopg2.connect(**kw)
+        self.connection = psycopg2.connect(**conn_params)
         self.cursor = self.connection.cursor()
         self.pg_version = self.connection.server_version
 
@@ -1236,6 +1205,10 @@ def main():
         conn.rollback()
     else:
         conn.commit()
+
+    conn.cursor.close()
+    conn.connection.close()
+
     module.exit_json(changed=changed, queries=executed_queries)
 
 
